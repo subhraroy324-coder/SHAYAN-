@@ -1,4 +1,4 @@
-# api/index.py
+# api/index.py - Vercel entry point
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from app import app
