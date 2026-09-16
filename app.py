@@ -1,33 +1,37 @@
-# app.py - 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵 × SHAYAN OSINT Toolkit (Vercel Ready)
+# app.py - 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵 OSINT Toolkit (Vercel-Ready)
 import os, json, base64, requests
-from datetime import datetime
-from functools import wraps
-from flask import Flask, render_template_string, request, jsonify, redirect, session, url_for
+from datetime import datetime, timedelta
+from flask import Flask, render_template_string, request, jsonify, redirect, url_for, session
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "cdx-appl-shayan-secret-2025")
+app.secret_key = os.environ.get("SECRET_KEY", "codex-apple-secret-2024-xyz")
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB upload limit
 
-# ================== CONFIG ==================
+# ================== VERCEL DETECTION ==================
 IS_VERCEL = os.environ.get('VERCEL') == '1'
-UPLOAD_FOLDER = 'static/uploads' if not IS_VERCEL else None
+
 if not IS_VERCEL:
+    UPLOAD_FOLDER = 'static/uploads'
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+else:
+    UPLOAD_FOLDER = None
+    app.config['UPLOAD_FOLDER'] = None
 
 SETTINGS_FILE = 'settings.json'
 BASE = "https://ft-osint-api.duckdns.org"
 
-# API Key
+# ================== ADMIN PASSWORD ==================
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "codex@19")
+
+# ================== API KEY ==================
 MASTER_KEY = os.environ.get("OSINT_MASTER_KEY", "vx-osint")
 
-# ================== ADMIN ==================
-ADMIN_PASSWORD = "codex@19"
-
 # ================== BRAND ==================
-BRAND_NAME = "𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵"
-RESULT_BRAND = "𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵"
+BRAND_NAME = "CODEX - APPLE"
+RESULT_BRAND = "𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵"
 
-# ================== TOOLS ==================
+# ================== ALL TOOLS ==================
 TOOLS = {
     'number':     {'name': '📞 Number Lookup',        'endpoint': '/api/number',     'param': 'num',      'cat': 'Number'},
     'numleak':    {'name': '🔎 Number Leak (HiTeck)', 'endpoint': '/api/numleak',    'param': 'num',      'cat': 'Number'},
@@ -68,15 +72,22 @@ DEFAULT_SETTINGS = {
     "owner_name": BRAND_NAME,
     "profile_image": "https://via.placeholder.com/300x300/000000/00ff00?text=CDX",
     "main_bg": "", "sidebar_bg": "", "audio_url": "",
-    "phone": "8910747761",
+    "phone": "",
     "telegram": "",
-    "whatsapp": "918910747761",
+    "whatsapp": "",
 }
 
-# ================== SETTINGS (Vercel-safe) ==================
+# ================== SETTINGS HANDLERS ==================
+_SETTINGS_CACHE = None
+
 def load_settings():
-    if IS_VERCEL:
-        return DEFAULT_SETTINGS.copy()
+    global _SETTINGS_CACHE
+    if _SETTINGS_CACHE is not None:
+        d = _SETTINGS_CACHE.copy()
+        for k, v in DEFAULT_SETTINGS.items():
+            if k not in d:
+                d[k] = v
+        return d
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE) as f:
@@ -84,47 +95,52 @@ def load_settings():
                 for k, v in DEFAULT_SETTINGS.items():
                     if k not in d:
                         d[k] = v
-                d['owner_name'] = BRAND_NAME
-                d['phone'] = "8910747761"
-                d['whatsapp'] = "918910747761"
+                _SETTINGS_CACHE = d.copy()
                 return d
         except Exception:
-            return DEFAULT_SETTINGS.copy()
-    return DEFAULT_SETTINGS.copy()
+            pass
+    _SETTINGS_CACHE = DEFAULT_SETTINGS.copy()
+    return _SETTINGS_CACHE.copy()
 
 def save_settings(s):
-    if IS_VERCEL:
-        print("⚠️ Vercel read-only. Use external storage for persistence.")
-        return
-    with open(SETTINGS_FILE, 'w') as f:
-        json.dump(s, f, indent=2)
+    global _SETTINGS_CACHE
+    _SETTINGS_CACHE = s.copy()
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(s, f, indent=2)
+    except Exception as e:
+        print("⚠️ Settings kept in memory only (Vercel read-only):", e)
 
-def save_uploaded_file(file_obj, field_name):
-    """
-    Saves uploaded file. On Vercel, returns base64 data URL (in-memory).
-    Locally, saves to disk and returns path.
-    """
-    if not file_obj or file_obj.filename == '':
+# ================== HELPERS ==================
+def file_to_data_uri(file_storage):
+    if not file_storage or not file_storage.filename:
         return None
-    filename = f"{field_name}_{file_obj.filename}"
-    if IS_VERCEL:
-        # Encode as base64 data URL (in-memory only, resets on cold start)
-        data = file_obj.read()
-        mime = file_obj.content_type or 'application/octet-stream'
-        b64 = base64.b64encode(data).decode()
+    try:
+        data = file_storage.read()
+        if not data:
+            return None
+        mime = file_storage.mimetype or 'application/octet-stream'
+        b64 = base64.b64encode(data).decode('utf-8')
         return f"data:{mime};base64,{b64}"
-    else:
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file_obj.save(filepath)
-        return f"/static/uploads/{filename}"
+    except Exception as e:
+        print("File upload error:", e)
+        return None
 
-def admin_required(f):
+def is_video_url(u):
+    if not u:
+        return False
+    if u.startswith('data:video/'):
+        return True
+    return u.lower().endswith(('.mp4', '.webm', '.ogg'))
+
+def login_required(f):
+    from functools import wraps
     @wraps(f)
-    def deco(*a, **k):
-        if not session.get('admin'):
-            return redirect('/admin/login')
-        return f(*a, **k)
-    return deco
+    def wrapper(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return wrapper
 
 # ----------------------------------------------------------------------
 # MAIN HTML
@@ -135,20 +151,20 @@ MAIN_HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵</title>
+<title>{{ owner_name }} — OSINT Toolkit</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Share Tech Mono',monospace}
 body{background:#000;color:#0f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;position:relative;overflow-x:hidden;padding:10px}
-#bg-video{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:-2;display:{{ 'block' if main_bg and main_bg.endswith(('.mp4','.webm','.ogg')) and not main_bg.startswith('data:') else 'none' }}}
-#bg-image{position:fixed;top:0;left:0;width:100%;height:100%;background-image:url('{{ main_bg }}');background-size:cover;background-position:center;z-index:-2;display:{{ 'block' if main_bg and not main_bg.endswith(('.mp4','.webm','.ogg')) else 'none' }};opacity:0.3}
+#bg-video{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:-2;display:{{ 'block' if is_main_video else 'none' }}}
+#bg-image{position:fixed;top:0;left:0;width:100%;height:100%;background-image:url('{{ main_bg }}');background-size:cover;background-position:center;z-index:-2;display:{{ 'block' if main_bg and not is_main_video else 'none' }};opacity:0.3}
 #matrix-canvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;opacity:0.15}
 
 .audio-popup{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);backdrop-filter:blur(15px);z-index:99999;display:flex;justify-content:center;align-items:center;transition:opacity 0.6s;cursor:pointer}
 .audio-popup.hidden{opacity:0;pointer-events:none}
 .audio-popup-content{text-align:center;animation:pulse 2s infinite}
 .audio-logo{width:160px;height:160px;border-radius:50%;border:4px solid #0f0;box-shadow:0 0 40px #0f0;object-fit:cover;margin-bottom:20px}
-.audio-popup-content h2{color:#0f0;text-shadow:0 0 15px #0f0;font-size:1.5rem;margin-bottom:10px;letter-spacing:2px}
+.audio-popup-content h2{color:#0f0;text-shadow:0 0 15px #0f0;font-size:1.6rem;margin-bottom:10px;letter-spacing:2px}
 .audio-popup-content p{color:#fff;opacity:0.7;font-size:0.85rem}
 @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
 
@@ -156,12 +172,12 @@ body{background:#000;color:#0f0;min-height:100vh;display:flex;flex-direction:col
 .header .left-side{display:flex;align-items:center;gap:12px}
 .menu-icon{font-size:24px;cursor:pointer;color:#0f0}
 .menu-icon:hover{color:#fff}
-.header h1{font-size:0.95rem;color:#0f0;text-shadow:0 0 10px #0f0;letter-spacing:1px}
-.header .free-badge{background:#0f0;color:#000;padding:6px 12px;border-radius:8px;border:none;font-weight:bold;font-size:0.7rem;letter-spacing:1px}
+.header h1{font-size:1rem;color:#0f0;text-shadow:0 0 10px #0f0;letter-spacing:1px}
+.header .free-badge{background:#0f0;color:#000;padding:6px 12px;border-radius:8px;border:none;font-weight:bold;font-size:0.75rem;letter-spacing:1px}
 
 .container{width:100%;max-width:520px;display:flex;flex-direction:column;align-items:center;z-index:1}
 .profile-img{width:200px;height:200px;object-fit:cover;border:2px solid #0f0;border-radius:50%;box-shadow:0 0 25px rgba(0,255,0,0.5);margin-bottom:15px}
-.subtitle{font-size:1.2rem;font-weight:bold;color:#0f0;text-shadow:0 0 15px #0f0;text-align:center;margin-bottom:20px;letter-spacing:2px}
+.subtitle{font-size:1.3rem;font-weight:bold;color:#0f0;text-shadow:0 0 15px #0f0;text-align:center;margin-bottom:20px}
 
 .tool-box{width:100%;background:rgba(0,0,0,0.85);border:1px solid #0f0;border-radius:12px;padding:20px;box-shadow:0 0 15px rgba(0,255,0,0.2);backdrop-filter:blur(5px);margin-bottom:20px}
 .tool-box h3{color:#0f0;margin-bottom:12px;font-size:1rem;border-bottom:1px dashed #0f0;padding-bottom:6px}
@@ -197,24 +213,17 @@ body{background:#000;color:#0f0;min-height:100vh;display:flex;flex-direction:col
 .result-box .err{color:#f00}
 
 .result-brand{
-  margin-top:14px;
-  padding-top:10px;
+  margin-top:14px; padding-top:10px;
   border-top:1px dashed rgba(0,255,0,0.4);
-  text-align:center;
-  font-size:0.85rem;
-  font-weight:bold;
-  letter-spacing:2px;
-  color:#0f0;
+  text-align:center; font-size:0.85rem; font-weight:bold;
+  letter-spacing:2px; color:#0f0;
   text-shadow:0 0 10px #0f0, 0 0 20px rgba(0,255,0,0.5);
+  opacity:0.95;
 }
 .result-brand .sub{
-  display:block;
-  font-size:0.7rem;
-  font-weight:normal;
-  letter-spacing:1px;
-  color:#0ff;
-  text-shadow:0 0 6px #0ff;
-  margin-top:4px;
+  display:block; font-size:0.7rem; font-weight:normal;
+  letter-spacing:1px; color:#0ff;
+  text-shadow:0 0 6px #0ff; margin-top:4px;
 }
 
 .status-box{background:#111;border:1px solid #0f0;border-radius:8px;padding:12px;margin-bottom:12px;font-size:0.85rem;color:#0f0;text-align:center}
@@ -253,11 +262,11 @@ body{background:#000;color:#0f0;min-height:100vh;display:flex;flex-direction:col
 {% endif %}
 
 {% if main_bg %}
-  {% if main_bg.startswith('data:video') or main_bg.endswith(('.mp4','.webm','.ogg')) and not main_bg.startswith('data:') %}
-    <video id="bg-video" autoplay loop muted playsinline src="{{ main_bg }}"></video>
-  {% else %}
-    <div id="bg-image"></div>
-  {% endif %}
+{% if is_main_video %}
+<video id="bg-video" autoplay loop muted playsinline src="{{ main_bg }}"></video>
+{% else %}
+<div id="bg-image"></div>
+{% endif %}
 {% endif %}
 <canvas id="matrix-canvas"></canvas>
 
@@ -265,7 +274,7 @@ body{background:#000;color:#0f0;min-height:100vh;display:flex;flex-direction:col
 
 <div class="sidebar" id="sidebar">
   {% if sidebar_bg %}
-    {% if sidebar_bg.startswith('data:video') %}
+    {% if is_sidebar_video %}
       <video class="sidebar-bg" autoplay loop muted playsinline src="{{ sidebar_bg }}"></video>
     {% else %}
       <img class="sidebar-bg" src="{{ sidebar_bg }}" alt="">
@@ -282,20 +291,24 @@ body{background:#000;color:#0f0;min-height:100vh;display:flex;flex-direction:col
   </div>
   <div class="contact-section">
     <h3>CONTACT ME</h3>
+    {% if phone %}
     <a href="tel:{{ phone }}" class="contact-item">
       <span class="icon">&#128222;</span>
       <div class="info"><span class="label">Phone</span><span class="value">{{ phone }}</span></div>
     </a>
+    {% endif %}
     {% if telegram %}
     <a href="https://t.me/{{ telegram }}" target="_blank" class="contact-item">
       <span class="icon">&#128172;</span>
       <div class="info"><span class="label">Telegram</span><span class="value">{{ telegram }}</span></div>
     </a>
     {% endif %}
+    {% if whatsapp %}
     <a href="https://wa.me/{{ whatsapp }}" target="_blank" class="contact-item">
       <span class="icon">&#128241;</span>
       <div class="info"><span class="label">WhatsApp</span><span class="value">{{ whatsapp }}</span></div>
     </a>
+    {% endif %}
   </div>
 </div>
 
@@ -513,46 +526,49 @@ renderTools();
 """
 
 # ----------------------------------------------------------------------
-# ADMIN LOGIN HTML
+# LOGIN HTML
 # ----------------------------------------------------------------------
-ADMIN_LOGIN_HTML = """
+LOGIN_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin Login — 𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵</title>
+<title>Admin Login — CODEX - APPLE</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}
-body{background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px;color:#fff}
-.box{background:rgba(255,255,255,0.05);backdrop-filter:blur(15px);border:1px solid rgba(0,255,0,0.3);border-radius:20px;padding:40px;width:100%;max-width:380px;box-shadow:0 20px 50px rgba(0,0,0,0.5)}
-h1{text-align:center;color:#0f0;text-shadow:0 0 15px #0f0;margin-bottom:10px;font-size:1.3rem;letter-spacing:2px}
-.sub{text-align:center;color:#888;font-size:0.8rem;margin-bottom:25px;letter-spacing:1px}
-label{display:block;font-size:0.85rem;color:#ccc;margin-bottom:8px}
-input{width:100%;padding:14px;background:#111;border:1px solid #0f0;border-radius:10px;color:#fff;font-size:1rem;outline:none;font-family:inherit;letter-spacing:2px;text-align:center}
-input:focus{border-color:#0f0;box-shadow:0 0 15px rgba(0,255,0,0.4)}
-button{width:100%;padding:14px;background:linear-gradient(135deg,#0f0,#0a0);color:#000;border:none;border-radius:10px;font-weight:bold;font-size:1rem;cursor:pointer;margin-top:15px;letter-spacing:1px;transition:all 0.3s}
-button:hover{transform:scale(1.02);box-shadow:0 0 25px #0f0}
-.err{background:rgba(255,0,0,0.15);border:1px solid #f00;color:#f88;padding:10px;border-radius:8px;margin-bottom:15px;font-size:0.85rem;text-align:center}
+body{background:#0f0c29;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);color:#fff;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:20px}
+.login-card{background:rgba(255,255,255,0.05);border:1px solid rgba(0,255,0,0.3);border-radius:20px;padding:45px 35px;width:100%;max-width:420px;box-shadow:0 20px 60px rgba(0,255,0,0.15);backdrop-filter:blur(10px)}
+h1{text-align:center;margin-bottom:8px;color:#0f0;text-shadow:0 0 15px #0f0;letter-spacing:3px;font-size:1.4rem}
+.sub{text-align:center;color:#aaa;font-size:0.85rem;margin-bottom:28px;letter-spacing:2px}
+label{display:block;font-size:0.85rem;margin-bottom:8px;color:#ccc}
+input[type="password"]{width:100%;padding:14px 16px;background:rgba(0,0,0,0.4);border:1px solid rgba(0,255,0,0.4);border-radius:10px;color:#0f0;font-size:1rem;outline:none;letter-spacing:2px;font-family:monospace}
+input[type="password"]:focus{border-color:#0f0;box-shadow:0 0 15px rgba(0,255,0,0.5)}
+button{width:100%;padding:14px;margin-top:20px;background:linear-gradient(135deg,#0f0,#0a0);color:#000;border:none;border-radius:10px;font-size:1rem;font-weight:bold;cursor:pointer;letter-spacing:2px;transition:all 0.3s}
+button:hover{box-shadow:0 0 25px #0f0;transform:translateY(-2px)}
+.error{background:rgba(255,0,0,0.15);border:1px solid #f00;color:#f00;padding:11px;border-radius:8px;text-align:center;margin-bottom:18px;font-size:0.85rem}
+.back-link{display:block;text-align:center;margin-top:20px;color:#0f0;text-decoration:none;font-size:0.85rem;letter-spacing:1px}
+.back-link:hover{text-decoration:underline}
 </style>
 </head>
 <body>
-<div class="box">
-<h1>🔐 ADMIN LOGIN</h1>
-<p class="sub">𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵</p>
-{% if error %}<div class="err">❌ {{ error }}</div>{% endif %}
-<form method="POST">
-<label>Enter Admin Password</label>
-<input type="password" name="password" required autofocus placeholder="••••••••">
-<button type="submit">🔓 LOGIN</button>
+<div class="login-card">
+<h1>🔒 ADMIN ACCESS</h1>
+<div class="sub">CODEX - APPLE</div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="POST" action="/admin/login">
+  <label>Enter Admin Password</label>
+  <input type="password" name="password" placeholder="••••••••" required autofocus>
+  <button type="submit">🔓 LOGIN</button>
 </form>
+<a href="/" class="back-link">← Back to Main Site</a>
 </div>
 </body>
 </html>
 """
 
 # ----------------------------------------------------------------------
-# ADMIN PANEL HTML (with gallery uploads)
+# ADMIN PANEL
 # ----------------------------------------------------------------------
 ADMIN_HTML = """
 <!DOCTYPE html>
@@ -560,155 +576,166 @@ ADMIN_HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin — 𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵</title>
+<title>Admin Panel — CODEX - APPLE</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',sans-serif}
-body{background:#0f0c29;color:#fff;min-height:100vh;padding:25px 15px;display:flex;justify-content:center}
-.admin-card{background:rgba(255,255,255,0.05);border:1px solid rgba(0,255,0,0.2);border-radius:20px;padding:30px;width:100%;max-width:720px;box-shadow:0 20px 50px rgba(0,0,0,0.5)}
-h1{text-align:center;margin-bottom:10px;color:#0f0;text-shadow:0 0 10px #0f0;letter-spacing:2px;font-size:1.3rem}
-.sub{text-align:center;color:#888;font-size:0.8rem;margin-bottom:25px}
-.warn{background:rgba(255,200,0,0.1);border:1px solid #fc0;color:#fc0;padding:12px;border-radius:8px;font-size:0.8rem;margin-bottom:20px;line-height:1.6}
-.section-title{color:#0f0;margin:25px 0 15px;font-size:1.05rem;border-bottom:1px solid #0f0;padding-bottom:6px;display:inline-block;letter-spacing:1px}
-.form-group{margin-bottom:18px}
-label{display:block;font-size:0.82rem;margin-bottom:6px;color:#ccc}
-input[type="text"],input[type="number"],input[type="url"]{width:100%;padding:11px 14px;background:rgba(0,0,0,0.4);border:1px solid rgba(0,255,0,0.3);border-radius:8px;color:#fff;font-size:0.9rem;outline:none;font-family:inherit}
-input:focus{border-color:#0f0;box-shadow:0 0 10px rgba(0,255,0,0.3)}
-input[type="file"]{width:100%;padding:10px;background:rgba(0,0,0,0.4);border:1px dashed rgba(0,255,0,0.5);border-radius:8px;color:#fff;font-size:0.85rem;cursor:pointer}
-input[type="file"]::file-selector-button{background:#0f0;color:#000;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:bold;margin-right:12px;font-family:inherit}
-.preview{margin-top:10px;text-align:center;padding:10px;background:rgba(0,0,0,0.4);border-radius:10px;min-height:60px;display:flex;align-items:center;justify-content:center}
-.preview img,.preview video{max-width:100%;max-height:130px;border-radius:8px;border:1px solid #0f0}
-.preview audio{width:100%}
-.preview .empty{color:#666;font-size:0.8rem;font-style:italic}
-.btn-save{width:100%;padding:14px;background:linear-gradient(135deg,#0f0,#0a0);color:#000;border:none;border-radius:10px;font-size:1rem;font-weight:bold;cursor:pointer;margin-top:20px;letter-spacing:1px;transition:all 0.3s}
-.btn-save:hover{transform:scale(1.02);box-shadow:0 0 20px rgba(0,255,0,0.5)}
-.back-link{display:block;text-align:center;margin-top:20px;color:#0f0;text-decoration:none;font-size:0.9rem}
+body{background:#0f0c29;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);color:#fff;min-height:100vh;padding:30px 15px;display:flex;justify-content:center}
+.admin-card{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:35px;width:100%;max-width:780px;box-shadow:0 20px 50px rgba(0,0,0,0.5);backdrop-filter:blur(10px)}
+h1{text-align:center;margin-bottom:8px;color:#0f0;text-shadow:0 0 10px #0f0;letter-spacing:2px;font-size:1.4rem}
+.top-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.logout-btn{background:rgba(255,0,0,0.15);border:1px solid #f00;color:#f00;padding:8px 16px;border-radius:8px;text-decoration:none;font-size:0.8rem;font-weight:bold;letter-spacing:1px;transition:all 0.3s}
+.logout-btn:hover{background:#f00;color:#000}
+.warn{background:rgba(0,255,0,0.1);border:1px solid #0f0;color:#0f0;padding:12px;border-radius:8px;font-size:0.82rem;margin-bottom:20px;text-align:center;line-height:1.5}
+.toast{position:fixed;top:20px;right:20px;background:linear-gradient(135deg,#0f0,#0a0);color:#000;padding:14px 24px;border-radius:10px;font-weight:bold;letter-spacing:1px;box-shadow:0 10px 30px rgba(0,255,0,0.5);transform:translateX(500px);transition:transform 0.4s ease;z-index:9999}
+.toast.show{transform:translateX(0)}
+.section{background:rgba(0,0,0,0.25);border:1px solid rgba(0,255,0,0.2);border-radius:14px;padding:22px;margin-bottom:22px}
+.section-title{color:#0f0;margin-bottom:18px;font-size:1.05rem;border-bottom:1px dashed #0f0;padding-bottom:8px;letter-spacing:1px;text-shadow:0 0 8px rgba(0,255,0,0.5)}
+.form-group{margin-bottom:16px}
+label{display:block;font-size:0.82rem;margin-bottom:6px;color:#bbb;letter-spacing:0.5px}
+input[type="text"],input[type="number"]{width:100%;padding:11px 14px;background:rgba(0,0,0,0.35);border:1px solid rgba(0,255,0,0.25);border-radius:8px;color:#fff;font-size:0.92rem;outline:none;transition:all 0.2s}
+input:focus{border-color:#0f0;box-shadow:0 0 12px rgba(0,255,0,0.35)}
+.file-row{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+.file-label{background:rgba(0,255,0,0.12);border:1px dashed #0f0;color:#0f0;padding:9px 14px;border-radius:8px;font-size:0.78rem;cursor:pointer;letter-spacing:0.5px;transition:all 0.25s;display:inline-flex;align-items:center;gap:6px}
+.file-label:hover{background:rgba(0,255,0,0.25);box-shadow:0 0 12px rgba(0,255,0,0.4)}
+.file-label input[type="file"]{display:none}
+.preview{max-width:130px;max-height:80px;border-radius:8px;border:1px solid #0f0;object-fit:cover;display:none;box-shadow:0 0 10px rgba(0,255,0,0.35)}
+.preview.show{display:block}
+.file-name{color:#0ff;font-size:0.75rem;letter-spacing:0.5px}
+.hint{font-size:0.72rem;color:#888;margin-top:4px;letter-spacing:0.3px}
+.btn-save{width:100%;padding:13px;background:linear-gradient(135deg,#0f0,#0a0);color:#000;border:none;border-radius:10px;font-size:0.95rem;font-weight:bold;cursor:pointer;margin-top:10px;letter-spacing:1.5px;transition:all 0.3s}
+.btn-save:hover{box-shadow:0 0 20px #0f0;transform:translateY(-2px)}
+.back-link{display:block;text-align:center;margin-top:22px;color:#0f0;text-decoration:none;font-size:0.9rem;letter-spacing:1px}
 .back-link:hover{text-decoration:underline}
-.logout{display:block;text-align:center;margin-top:10px;color:#f66;text-decoration:none;font-size:0.85rem}
-.logout:hover{text-decoration:underline}
-.row{display:grid;grid-template-columns:1fr;gap:12px}
-@media(min-width:600px){.row{grid-template-columns:1fr 1fr}}
-.file-info{font-size:0.75rem;color:#888;margin-top:4px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:600px){.grid-2{grid-template-columns:1fr}}
+.current-media{font-size:0.72rem;color:#0ff;margin-top:6px;word-break:break-all;opacity:0.8}
 </style>
 </head>
 <body>
+<div class="toast" id="toast">✅ Saved Successfully!</div>
 <div class="admin-card">
-<h1>⚙️ ADMIN PANEL</h1>
-<p class="sub">𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵</p>
+<h1>⚙️ CODEX - APPLE — Admin Panel</h1>
+<div class="top-bar">
+  <span style="color:#aaa;font-size:0.8rem">Logged in as Administrator</span>
+  <a href="/admin/logout" class="logout-btn">🚪 LOGOUT</a>
+</div>
+<div class="warn">✅ All tools FREE. You can <b>paste a URL</b> OR <b>upload a file from your gallery</b> — the uploaded file will be used automatically. Changes appear instantly on the main site.</div>
 
-<div class="warn">
-⚠️ <b>Vercel Note:</b> Uploaded files (images/audio) are stored as base64 in memory and <b>will reset on redeploy</b>. For permanent storage, use direct URLs from Imgur / Catbox / Cloudinary.
-</div>
+<!-- GENERAL -->
+<form class="section" method="POST" action="/admin/save/general">
+  <h2 class="section-title">🔧 General Settings</h2>
+  <div class="form-group"><label>Brand / Owner Name</label><input type="text" name="owner_name" value="{{ owner_name }}" required></div>
+  <div class="form-group"><label>Master API Key</label><input type="text" name="api_key" value="{{ api_key }}" required></div>
+  <div class="form-group"><label>Default Bomber Count</label><input type="number" name="default_count" value="{{ default_count }}" required></div>
+  <button type="submit" class="btn-save">💾 SAVE GENERAL SETTINGS</button>
+</form>
 
-<form action="/admin/settings" method="POST" enctype="multipart/form-data">
+<!-- MEDIA -->
+<form class="section" method="POST" action="/admin/save/media" enctype="multipart/form-data">
+  <h2 class="section-title">🖼️ Media Settings (URL or Upload from Gallery)</h2>
 
-<h2 class="section-title">General</h2>
-<div class="form-group">
-<label>Brand / Owner Name</label>
-<input type="text" name="owner_name" value="{{ owner_name }}" required>
-</div>
-<div class="form-group">
-<label>Master API Key</label>
-<input type="text" name="api_key" value="{{ api_key }}" required>
-</div>
-<div class="form-group">
-<label>Default Bomber Count</label>
-<input type="number" name="default_count" value="{{ default_count }}" min="1" max="500" required>
-</div>
+  <div class="form-group">
+    <label>Profile Image</label>
+    <input type="text" name="profile_image" value="{{ profile_image if not profile_image.startswith('data:') else '' }}" placeholder="Paste image URL...">
+    <div class="file-row">
+      <label class="file-label">
+        📁 Choose Image
+        <input type="file" name="profile_image_file" accept="image/*" onchange="previewFile(this,'preview_profile','name_profile')">
+      </label>
+      <span class="file-name" id="name_profile"></span>
+      <img id="preview_profile" class="preview" alt="">
+    </div>
+    {% if profile_image.startswith('data:') %}<div class="current-media">✓ Currently uploaded (custom file)</div>{% endif %}
+  </div>
 
-<h2 class="section-title">📷 Profile Image (Gallery Upload)</h2>
-<div class="form-group">
-<label>Choose Image From Gallery</label>
-<input type="file" name="profile_image_file" accept="image/*">
-<div class="file-info">Or paste a direct URL below ↓</div>
-</div>
-<div class="form-group">
-<label>Profile Image URL (Alternative)</label>
-<input type="text" name="profile_image_url" value="{{ profile_image }}" placeholder="https://...">
-</div>
-<div class="preview">
-  {% if profile_image %}<img src="{{ profile_image }}" alt="Profile">{% else %}<span class="empty">No image</span>{% endif %}
-</div>
+  <div class="form-group">
+    <label>Main Background (image or video)</label>
+    <input type="text" name="main_bg" value="{{ main_bg if not main_bg.startswith('data:') else '' }}" placeholder="Paste image/video URL...">
+    <div class="file-row">
+      <label class="file-label">
+        📁 Choose Image / Video
+        <input type="file" name="main_bg_file" accept="image/*,video/*" onchange="previewFile(this,'preview_main','name_main')">
+      </label>
+      <span class="file-name" id="name_main"></span>
+      <img id="preview_main" class="preview" alt="">
+    </div>
+    <div class="hint">Supported: jpg, png, gif, mp4, webm (keep under ~3 MB for Vercel)</div>
+    {% if main_bg.startswith('data:') %}<div class="current-media">✓ Currently uploaded (custom file)</div>{% endif %}
+  </div>
 
-<h2 class="section-title">🖼️ Main Background (Gallery Upload)</h2>
-<div class="form-group">
-<label>Choose Image / Video From Gallery</label>
-<input type="file" name="main_bg_file" accept="image/*,video/*">
-<div class="file-info">Or paste a direct URL below ↓</div>
-</div>
-<div class="form-group">
-<label>Main Background URL (Alternative)</label>
-<input type="text" name="main_bg_url" value="{{ main_bg }}" placeholder="https://...">
-</div>
-<div class="preview">
-  {% if main_bg %}
-    {% if main_bg.startswith('data:video') or (main_bg.endswith(('.mp4','.webm','.ogg')) and not main_bg.startswith('data:')) %}
-      <video src="{{ main_bg }}" autoplay loop muted playsinline></video>
-    {% else %}
-      <img src="{{ main_bg }}" alt="Main BG">
-    {% endif %}
-  {% else %}
-    <span class="empty">No background</span>
-  {% endif %}
-</div>
+  <div class="form-group">
+    <label>Sidebar Background (image or video)</label>
+    <input type="text" name="sidebar_bg" value="{{ sidebar_bg if not sidebar_bg.startswith('data:') else '' }}" placeholder="Paste image/video URL...">
+    <div class="file-row">
+      <label class="file-label">
+        📁 Choose Image / Video
+        <input type="file" name="sidebar_bg_file" accept="image/*,video/*" onchange="previewFile(this,'preview_side','name_side')">
+      </label>
+      <span class="file-name" id="name_side"></span>
+      <img id="preview_side" class="preview" alt="">
+    </div>
+    {% if sidebar_bg.startswith('data:') %}<div class="current-media">✓ Currently uploaded (custom file)</div>{% endif %}
+  </div>
 
-<h2 class="section-title">🎨 Sidebar Background (Gallery Upload)</h2>
-<div class="form-group">
-<label>Choose Image / Video From Gallery</label>
-<input type="file" name="sidebar_bg_file" accept="image/*,video/*">
-<div class="file-info">Or paste a direct URL below ↓</div>
-</div>
-<div class="form-group">
-<label>Sidebar Background URL (Alternative)</label>
-<input type="text" name="sidebar_bg_url" value="{{ sidebar_bg }}" placeholder="https://...">
-</div>
-<div class="preview">
-  {% if sidebar_bg %}
-    {% if sidebar_bg.startswith('data:video') or (sidebar_bg.endswith(('.mp4','.webm','.ogg')) and not sidebar_bg.startswith('data:')) %}
-      <video src="{{ sidebar_bg }}" autoplay loop muted playsinline></video>
-    {% else %}
-      <img src="{{ sidebar_bg }}" alt="Sidebar BG">
-    {% endif %}
-  {% else %}
-    <span class="empty">No background</span>
-  {% endif %}
-</div>
+  <div class="form-group">
+    <label>Background Music (mp3)</label>
+    <input type="text" name="audio_url" value="{{ audio_url if not audio_url.startswith('data:') else '' }}" placeholder="Paste mp3 URL...">
+    <div class="file-row">
+      <label class="file-label">
+        📁 Choose Audio (mp3)
+        <input type="file" name="audio_url_file" accept="audio/*" onchange="document.getElementById('name_audio').textContent=this.files[0]?.name||''">
+      </label>
+      <span class="file-name" id="name_audio"></span>
+    </div>
+    <div class="hint">If you upload a new audio file, it replaces the URL above.</div>
+    {% if audio_url.startswith('data:') %}<div class="current-media">✓ Currently uploaded (custom file)</div>{% endif %}
+  </div>
 
-<h2 class="section-title">🎵 Background Music (Gallery Upload)</h2>
-<div class="form-group">
-<label>Choose Audio From Gallery</label>
-<input type="file" name="audio_file" accept="audio/*">
-<div class="file-info">Or paste a direct URL below ↓</div>
-</div>
-<div class="form-group">
-<label>Music URL (Alternative)</label>
-<input type="text" name="audio_url" value="{{ audio_url }}" placeholder="https://...">
-</div>
-<div class="preview">
-  {% if audio_url %}<audio controls src="{{ audio_url }}"></audio>{% else %}<span class="empty">No audio</span>{% endif %}
-</div>
+  <button type="submit" class="btn-save">💾 SAVE MEDIA SETTINGS</button>
+</form>
 
-<h2 class="section-title">📞 Contact</h2>
-<div class="row">
-<div class="form-group">
-<label>Phone</label>
-<input type="text" name="phone" value="{{ phone }}">
-</div>
-<div class="form-group">
-<label>WhatsApp (with country code)</label>
-<input type="text" name="whatsapp" value="{{ whatsapp }}">
-</div>
-</div>
-<div class="form-group">
-<label>Telegram (leave empty to hide)</label>
-<input type="text" name="telegram" value="{{ telegram }}" placeholder="Optional">
-</div>
-
-<button type="submit" class="btn-save">💾 SAVE ALL SETTINGS</button>
+<!-- CONTACT -->
+<form class="section" method="POST" action="/admin/save/contact">
+  <h2 class="section-title">📞 Contact Settings</h2>
+  <div class="grid-2">
+    <div class="form-group"><label>Phone</label><input type="text" name="phone" value="{{ phone }}" placeholder="e.g. 91XXXXXXXXXX"></div>
+    <div class="form-group"><label>WhatsApp (with country code)</label><input type="text" name="whatsapp" value="{{ whatsapp }}" placeholder="e.g. 91XXXXXXXXXX"></div>
+  </div>
+  <div class="form-group"><label>Telegram (leave empty to hide)</label><input type="text" name="telegram" value="{{ telegram }}" placeholder="username without @"></div>
+  <button type="submit" class="btn-save">💾 SAVE CONTACT SETTINGS</button>
 </form>
 
 <a href="/" class="back-link">← Back to Main Site</a>
-<a href="/admin/logout" class="logout">🚪 Logout</a>
 </div>
+
+<script>
+function previewFile(input, previewId, nameId){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  document.getElementById(nameId).textContent = file.name;
+  const prev = document.getElementById(previewId);
+  if(file.type.startsWith('image/')){
+    const reader = new FileReader();
+    reader.onload = e => { prev.src = e.target.result; prev.classList.add('show'); };
+    reader.readAsDataURL(file);
+  } else if(file.type.startsWith('video/')){
+    prev.src = 'https://via.placeholder.com/130x80/000000/00ff00?text=VIDEO';
+    prev.classList.add('show');
+  }
+}
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg || '✅ Saved Successfully!';
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2600);
+}
+const params = new URLSearchParams(window.location.search);
+if (params.get('saved')) {
+  const sec = params.get('section') || '';
+  showToast('✅ ' + sec.toUpperCase() + ' settings saved!');
+  window.history.replaceState({}, '', '/admin');
+}
+</script>
 </body>
 </html>
 """
@@ -725,28 +752,33 @@ def index():
         phone=s['phone'], telegram=s['telegram'], whatsapp=s['whatsapp'],
         default_count=s['default_count'],
         result_brand=RESULT_BRAND,
+        is_main_video=is_video_url(s['main_bg']),
+        is_sidebar_video=is_video_url(s['sidebar_bg']),
         tools_json=json.dumps({k:{'name':v['name'],'param':v['param'],'cat':v['cat'],'special':v.get('special',False)} for k,v in TOOLS.items()}),
     )
 
-# ================== ADMIN LOGIN ==================
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
+    if session.get('admin_logged_in'):
+        return redirect(url_for('admin'))
+    error = None
     if request.method == 'POST':
-        if request.form.get('password') == ADMIN_PASSWORD:
-            session['admin'] = True
-            return redirect('/admin')
-        return render_template_string(ADMIN_LOGIN_HTML, error="Wrong password. Try again.")
-    if session.get('admin'):
-        return redirect('/admin')
-    return render_template_string(ADMIN_LOGIN_HTML, error=None)
+        pwd = request.form.get('password', '')
+        if pwd == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            session.permanent = True
+            return redirect(url_for('admin'))
+        else:
+            error = "❌ Wrong password. Access denied."
+    return render_template_string(LOGIN_HTML, error=error)
 
 @app.route('/admin/logout')
 def admin_logout():
-    session.pop('admin', None)
-    return redirect('/admin/login')
+    session.clear()
+    return redirect(url_for('admin_login'))
 
 @app.route('/admin')
-@admin_required
+@login_required
 def admin():
     s = load_settings()
     return render_template_string(ADMIN_HTML,
@@ -755,64 +787,69 @@ def admin():
         audio_url=s['audio_url'], phone=s['phone'], telegram=s['telegram'],
         whatsapp=s['whatsapp'])
 
-@app.route('/admin/settings', methods=['POST'])
-@admin_required
-def save_admin():
+@app.route('/admin/save/general', methods=['POST'])
+@login_required
+def save_general():
     s = load_settings()
-
-    # Text fields
-    for f in ['owner_name', 'api_key', 'phone', 'telegram', 'whatsapp']:
-        if f in request.form:
-            s[f] = request.form[f]
-
+    if 'owner_name' in request.form and request.form['owner_name'].strip():
+        s['owner_name'] = request.form['owner_name'].strip()
+    if 'api_key' in request.form and request.form['api_key'].strip():
+        s['api_key'] = request.form['api_key'].strip()
     try:
         s['default_count'] = int(request.form.get('default_count', s['default_count']))
-    except:
+    except Exception:
         pass
+    save_settings(s)
+    return redirect('/admin?saved=1&section=General')
 
-    # Profile image — prefer upload, fallback to URL
-    pf = request.files.get('profile_image_file')
-    if pf and pf.filename:
-        uploaded = save_uploaded_file(pf, 'profile')
-        if uploaded:
-            s['profile_image'] = uploaded
-    elif request.form.get('profile_image_url'):
-        s['profile_image'] = request.form['profile_image_url']
+@app.route('/admin/save/media', methods=['POST'])
+@login_required
+def save_media():
+    s = load_settings()
 
-    # Main background
-    mb = request.files.get('main_bg_file')
-    if mb and mb.filename:
-        uploaded = save_uploaded_file(mb, 'mainbg')
-        if uploaded:
-            s['main_bg'] = uploaded
-    elif request.form.get('main_bg_url'):
-        s['main_bg'] = request.form['main_bg_url']
+    up = file_to_data_uri(request.files.get('profile_image_file'))
+    if up:
+        s['profile_image'] = up
+    elif 'profile_image' in request.form and request.form['profile_image'].strip():
+        s['profile_image'] = request.form['profile_image'].strip()
 
-    # Sidebar background
-    sb = request.files.get('sidebar_bg_file')
-    if sb and sb.filename:
-        uploaded = save_uploaded_file(sb, 'sidebg')
-        if uploaded:
-            s['sidebar_bg'] = uploaded
-    elif request.form.get('sidebar_bg_url'):
-        s['sidebar_bg'] = request.form['sidebar_bg_url']
+    up = file_to_data_uri(request.files.get('main_bg_file'))
+    if up:
+        s['main_bg'] = up
+    elif 'main_bg' in request.form:
+        val = request.form['main_bg'].strip()
+        if val:
+            s['main_bg'] = val
 
-    # Audio
-    af = request.files.get('audio_file')
-    if af and af.filename:
-        uploaded = save_uploaded_file(af, 'audio')
-        if uploaded:
-            s['audio_url'] = uploaded
-    elif request.form.get('audio_url'):
-        s['audio_url'] = request.form['audio_url']
+    up = file_to_data_uri(request.files.get('sidebar_bg_file'))
+    if up:
+        s['sidebar_bg'] = up
+    elif 'sidebar_bg' in request.form:
+        val = request.form['sidebar_bg'].strip()
+        if val:
+            s['sidebar_bg'] = val
 
-    if not s.get('owner_name'):
-        s['owner_name'] = BRAND_NAME
+    up = file_to_data_uri(request.files.get('audio_url_file'))
+    if up:
+        s['audio_url'] = up
+    elif 'audio_url' in request.form:
+        val = request.form['audio_url'].strip()
+        if val:
+            s['audio_url'] = val
 
     save_settings(s)
-    return redirect('/admin')
+    return redirect('/admin?saved=1&section=Media')
 
-# ================== API PROXY ==================
+@app.route('/admin/save/contact', methods=['POST'])
+@login_required
+def save_contact():
+    s = load_settings()
+    for f in ['phone', 'telegram', 'whatsapp']:
+        if f in request.form:
+            s[f] = request.form[f].strip()
+    save_settings(s)
+    return redirect('/admin?saved=1&section=Contact')
+
 @app.route('/api/proxy', methods=['POST'])
 def proxy():
     data = request.get_json() or {}
@@ -823,7 +860,7 @@ def proxy():
     key = s.get('api_key', MASTER_KEY)
 
     if tool not in TOOLS:
-        return jsonify({'error': 'Unknown tool'}), 400
+        return jsonify({'error':'Unknown tool'}), 400
 
     t = TOOLS[tool]
     if tool == 'bomber':
@@ -833,21 +870,15 @@ def proxy():
 
     try:
         r = requests.get(url, timeout=20)
-        try:
-            return jsonify({'data': r.json()}), r.status_code
-        except:
-            return jsonify({'data': r.text}), r.status_code
+        try: return jsonify({'data': r.json()}), r.status_code
+        except: return jsonify({'data': r.text}), r.status_code
     except Exception as e:
         return jsonify({'error': str(e)}), 502
 
-# ================== ENTRY POINT ==================
+# ================== VERCEL ENTRY POINT ==================
 if __name__ == '__main__':
-    print("=" * 60)
-    print("  𝐒𝐇𝐀𝐘𝐀𝐍 × 𝐂𝚯𝐃𝚵𝚾 𝚨𝐏𝐏𝐋𝚵  OSINT Toolkit")
-    print("=" * 60)
-    print("  Main Site :  http://127.0.0.1:4887")
-    print("  Admin     :  http://127.0.0.1:4887/admin")
-    print("  Admin Login: http://127.0.0.1:4887/admin/login")
-    print("  Password  :  codex@19")
-    print("=" * 60)
+    print("Starting CODEX - APPLE OSINT Toolkit (ALL FREE)...")
+    print("Main:   http://127.0.0.1:4887")
+    print("Admin:  http://127.0.0.1:4887/admin")
+    print("Password: codex@19")
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 4887)), debug=True)
